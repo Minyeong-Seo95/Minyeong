@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>두더지 잡기</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+  html, body { margin: 0; height: 100%; background: #5a3b1e; font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; touch-action: manipulation; overflow: hidden; }
+  #app { height: 100%; display: flex; flex-direction: column; max-width: 560px; margin: 0 auto; padding: 12px; color: #fff; }
+  #hud { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 20px; padding: 4px 4px 10px; }
+  #hud small { display: block; font-size: 12px; font-weight: 600; opacity: .8; }
+  #timebar { height: 8px; background: rgba(0,0,0,.3); border-radius: 4px; overflow: hidden; margin-bottom: 12px; }
+  #timefill { height: 100%; width: 100%; background: #ffd24a; transition: width .1s linear; }
+  #board { flex: 1; min-height: 0; display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(4, 1fr); }
+  @media (orientation: landscape) { #board { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, 1fr); } }
+  .hole { position: relative; overflow: hidden; border-radius: 18px; background: #8fcf5a; }
+  .hole::before { content: ""; position: absolute; left: 10%; right: 10%; bottom: 8%; height: 34%; background: #2b1a0c; border-radius: 50%; }
+  .mole { position: absolute; left: 50%; bottom: 14%; height: 78%; max-width: 90%; transform: translate(-50%, 110%); transition: transform .12s ease-out; object-fit: contain; pointer-events: none; }
+  .hole.up .mole { transform: translate(-50%, 0); }
+  .hole.bad .mole { filter: grayscale(1) brightness(.55) contrast(1.2); } /* 임시: 진짜 '잡으면 안 되는' 이미지가 생기면 제거해도 됨 */
+  .hole.bad::after { content: "💣"; position: absolute; top: 6px; right: 8px; font-size: 22px; }
+  .hole.hit { animation: shake .2s; }
+  .pop { position: absolute; left: 50%; top: 20%; transform: translateX(-50%); font-weight: 900; font-size: 26px; pointer-events: none; animation: rise .7s forwards; text-shadow: 0 2px 0 rgba(0,0,0,.4); }
+  .pop.plus { color: #fff36a; } .pop.minus { color: #ff6a6a; }
+  @keyframes rise { to { transform: translate(-50%, -40px); opacity: 0; } }
+  @keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; gap: 10px; color: #fff; }
+  #overlay.hidden { display: none; }
+  #overlay h1 { margin: 0; font-size: 34px; } #overlay p { margin: 0; line-height: 1.5; opacity: .95; }
+  button { margin-top: 10px; font-size: 22px; font-weight: 800; padding: 14px 36px; border: 0; border-radius: 999px; background: #ffd24a; color: #4a2c0a; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <div><small>점수</small><span id="score">0</span></div>
+    <div><small>콤보</small><span id="combo">0</span></div>
+    <div><small>남은 시간</small><span id="time">30</span></div>
+  </div>
+  <div id="timebar"><div id="timefill"></div></div>
+  <div id="board"></div>
+</div>
+<div id="overlay">
+  <h1 id="ovTitle">두더지 잡기</h1>
+  <p id="ovText">잡아야 하는 친구는 눌러서 <b>+점수</b>!<br>💣 표시가 있는 친구는 누르면 <b>감점</b>!<br>연속으로 맞히면 콤보 보너스가 붙어요. (30초)</p>
+  <button id="startBtn">시작</button>
+</div>
+
+<script>
+// ===== 설정 =====
+// 이미지는 이 폴더(mole/)에 아래 이름으로 넣으면 자동 적용됩니다.
+// 파일이 없으면 임시로 ../character.png 를 대신 씁니다.
+const GOOD_IMAGES = ["good1.png", "good2.png", "good3.png", "good4.png", "good5.png"]; // 잡아야 하는 것 5개
+const BAD_IMAGES  = ["bad1.png", "bad2.png"];                                          // 잡으면 안 되는 것 2개
+const FALLBACK = "../character.png";
+const GAME_SECONDS = 30;
+const GOOD_POINTS = 10;      // 기본 점수
+const COMBO_BONUS = 2;       // 콤보 1당 추가 점수 (최대 +10)
+const BAD_PENALTY = 20;      // 잡으면 안 되는 걸 눌렀을 때 감점
+const BAD_RATIO = 0.25;      // 잡으면 안 되는 게 나올 확률
+
+const $ = id => document.getElementById(id);
+const board = $("board");
+const holes = [];
+for (let i = 0; i < 12; i++) {
+  const h = document.createElement("div"); h.className = "hole";
+  const m = document.createElement("img"); m.className = "mole"; m.draggable = false;
+  m.onerror = () => { if (!m.src.endsWith("character.png")) m.src = FALLBACK; };
+  h.appendChild(m); board.appendChild(h);
+  const hole = { el: h, img: m, active: false, kind: null, timer: null };
+  h.addEventListener("pointerdown", e => { e.preventDefault(); tap(hole); });
+  holes.push(hole);
+}
+
+let score = 0, combo = 0, timeLeft = GAME_SECONDS, playing = false;
+let best = +localStorage.getItem("moleBest") || 0, tickId, spawnId, startAt;
+
+function setScore(v) { score = Math.max(0, v); $("score").textContent = score; }
+function setCombo(v) { combo = v; $("combo").textContent = combo; }
+
+function pop(hole, text, cls) {
+  const p = document.createElement("div"); p.className = "pop " + cls; p.textContent = text;
+  hole.el.appendChild(p); setTimeout(() => p.remove(), 700);
+}
+
+function hide(hole) {
+  hole.active = false; clearTimeout(hole.timer);
+  hole.el.classList.remove("up");
+}
+
+function tap(hole) {
+  if (!playing) return;
+  if (!hole.active) { setCombo(0); return; }       // 빈 칸 누르면 콤보 끊김
+  const kind = hole.kind; hide(hole);
+  hole.el.classList.add("hit"); setTimeout(() => hole.el.classList.remove("hit"), 200);
+  if (kind === "good") {
+    setCombo(combo + 1);
+    const pts = GOOD_POINTS + Math.min(combo - 1, 5) * COMBO_BONUS;
+    setScore(score + pts); pop(hole, "+" + pts, "plus");
+  } else {
+    setCombo(0); setScore(score - BAD_PENALTY); pop(hole, "-" + BAD_PENALTY, "minus");
+  }
+}
+
+// 시간이 지날수록 빨라지고 동시에 나오는 수도 늘어남
+function difficulty() {
+  const t = (GAME_SECONDS - timeLeft) / GAME_SECONDS; // 0 → 1
+  return { stay: 1200 - 600 * t, gap: 750 - 400 * t, multi: t > 0.6 ? 2 : 1 };
+}
+
+function spawn() {
+  if (!playing) return;
+  const d = difficulty();
+  for (let n = 0; n < d.multi; n++) {
+    const free = holes.filter(h => !h.active);
+    if (!free.length) break;
+    const hole = free[Math.floor(Math.random() * free.length)];
+    const bad = Math.random() < BAD_RATIO;
+    const list = bad ? BAD_IMAGES : GOOD_IMAGES;
+    hole.kind = bad ? "bad" : "good";
+    hole.img.src = list[Math.floor(Math.random() * list.length)];
+    hole.el.classList.toggle("bad", bad);
+    hole.active = true; hole.el.classList.add("up");
+    hole.timer = setTimeout(() => hide(hole), d.stay);
+  }
+  spawnId = setTimeout(spawn, d.gap);
+}
+
+function tick() {
+  timeLeft = Math.max(0, GAME_SECONDS - (performance.now() - startAt) / 1000);
+  $("time").textContent = Math.ceil(timeLeft);
+  $("timefill").style.width = (timeLeft / GAME_SECONDS * 100) + "%";
+  if (timeLeft <= 0) end();
+}
+
+function start() {
+  setScore(0); setCombo(0); timeLeft = GAME_SECONDS; playing = true;
+  holes.forEach(hide);
+  $("overlay").classList.add("hidden");
+  startAt = performance.now();
+  tickId = setInterval(tick, 100);
+  spawnId = setTimeout(spawn, 500);
+}
+
+function end() {
+  playing = false; clearInterval(tickId); clearTimeout(spawnId); holes.forEach(hide);
+  const isBest = score > best; if (isBest) { best = score; localStorage.setItem("moleBest", best); }
+  $("ovTitle").textContent = "시간 끝!";
+  $("ovText").innerHTML = `내 점수 <b style="font-size:30px">${score}</b>점<br>${isBest ? "🎉 최고 기록!" : "최고 기록 " + best + "점"}`;
+  $("startBtn").textContent = "다시 하기";
+  $("overlay").classList.remove("hidden");
+}
+
+$("startBtn").addEventListener("click", start);
+</script>
+</body>
+</html>
