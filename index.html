@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>바닷속 헤엄치기</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #021b2e; overflow: hidden; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<script>
+// ===== 설정 =====
+// 캐릭터 이미지: 같은 폴더에 character.png 를 넣으면 자동으로 사용됩니다.
+// 파일이 없으면 기본 물고기 그림이 나옵니다.
+const CHARACTER_SRC = "character.png";
+const PLAYER_SIZE = 70;      // 캐릭터 크기(px)
+const GRAVITY = 0;           // 0이면 위/아래로 자유롭게 이동
+const SPEED_Y = 320;         // 위아래 이동 속도
+const START_SPEED = 260;     // 시작 장애물 속도 (px/초)
+const SPEED_UP = 6;          // 초당 속도 증가량
+
+// ===== 기본 세팅 =====
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+let W, H;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", resize); resize();
+
+const img = new Image();
+let imgOk = false;
+img.onload = () => imgOk = true;
+img.src = CHARACTER_SRC;
+
+// ===== 입력: 위/아래 키, W/S, 마우스/터치(누른 곳 방향으로 이동) =====
+const keys = {};
+let pointerY = null;
+addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if (["ArrowUp","ArrowDown"," "].includes(e.key)) e.preventDefault();
+  if ((e.key === " " || e.key === "Enter") && state !== "play") start();
+});
+addEventListener("keyup", e => keys[e.key] = false);
+canvas.addEventListener("pointerdown", e => { pointerY = e.clientY; if (state !== "play") start(); });
+canvas.addEventListener("pointermove", e => { if (pointerY !== null) pointerY = e.clientY; });
+addEventListener("pointerup", () => pointerY = null);
+
+// ===== 게임 상태 =====
+let state = "ready"; // ready | play | over
+let player, obstacles, bubbles, speed, score, best = +localStorage.getItem("best") || 0, spawnT, last;
+
+function start() {
+  player = { x: W * 0.15, y: H / 2, vy: 0 };
+  obstacles = []; speed = START_SPEED; score = 0; spawnT = 0;
+  state = "play";
+}
+bubbles = Array.from({ length: 30 }, () => ({
+  x: Math.random() * innerWidth, y: Math.random() * innerHeight,
+  r: 2 + Math.random() * 5, s: 20 + Math.random() * 40
+}));
+
+function spawn() {
+  const type = Math.random();
+  if (type < 0.5) {
+    // 바위: 바닥에서 솟아오름
+    const h = 80 + Math.random() * H * 0.35, w = 60 + Math.random() * 50;
+    obstacles.push({ kind: "rock", x: W + 20, y: H - h, w, h });
+  } else if (type < 0.8) {
+    // 해초 기둥: 위에서 내려옴
+    const h = 80 + Math.random() * H * 0.35, w = 40;
+    obstacles.push({ kind: "weed", x: W + 20, y: 0, w, h });
+  } else {
+    // 해파리: 중간 높이
+    const s = 50;
+    obstacles.push({ kind: "jelly", x: W + 20, y: 40 + Math.random() * (H - 120), w: s, h: s });
+  }
+}
+
+function hit(a, b) {
+  // 캐릭터 충돌 박스를 조금 작게 해서 너그럽게 판정
+  const m = PLAYER_SIZE * 0.18;
+  return a.x + m < b.x + b.w && a.x + PLAYER_SIZE - m > b.x &&
+         a.y + m < b.y + b.h && a.y + PLAYER_SIZE - m > b.y;
+}
+
+function update(dt) {
+  // 물방울 배경
+  for (const b of bubbles) { b.y -= b.s * dt; if (b.y < -10) { b.y = H + 10; b.x = Math.random() * W; } }
+  if (state !== "play") return;
+
+  // 이동
+  let dir = 0;
+  if (keys.ArrowUp || keys.w || keys.W) dir -= 1;
+  if (keys.ArrowDown || keys.s || keys.S) dir += 1;
+  if (pointerY !== null) dir = Math.abs(pointerY - (player.y + PLAYER_SIZE/2)) < 8 ? 0 : (pointerY < player.y + PLAYER_SIZE/2 ? -1 : 1);
+  player.y += dir * SPEED_Y * dt;
+  player.y = Math.max(0, Math.min(H - PLAYER_SIZE, player.y));
+
+  // 장애물
+  speed += SPEED_UP * dt;
+  spawnT -= dt;
+  if (spawnT <= 0) { spawn(); spawnT = 0.7 + Math.random() * 0.8 - Math.min(0.4, speed / 2000); }
+  for (const o of obstacles) o.x -= speed * dt;
+  obstacles = obstacles.filter(o => o.x + o.w > -20);
+
+  score += dt * 10;
+  const pb = { x: player.x, y: player.y };
+  if (obstacles.some(o => hit(pb, o))) {
+    state = "over";
+    if (score > best) { best = Math.floor(score); localStorage.setItem("best", best); }
+  }
+}
+
+// ===== 그리기 =====
+function drawPlayer() {
+  const { x, y } = player;
+  const bob = Math.sin(performance.now() / 150) * 3;
+  if (imgOk) {
+    ctx.drawImage(img, x, y + bob, PLAYER_SIZE, PLAYER_SIZE);
+  } else {
+    // 기본 물고기
+    ctx.save(); ctx.translate(x, y + bob + PLAYER_SIZE / 2);
+    ctx.fillStyle = "#ffa62b";
+    ctx.beginPath(); ctx.ellipse(PLAYER_SIZE*0.5, 0, PLAYER_SIZE*0.42, PLAYER_SIZE*0.28, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(PLAYER_SIZE*0.12, 0); ctx.lineTo(0, -PLAYER_SIZE*0.25); ctx.lineTo(0, PLAYER_SIZE*0.25); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(PLAYER_SIZE*0.72, -5, 6, 0, 7); ctx.fill();
+    ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(PLAYER_SIZE*0.74, -5, 3, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawObstacle(o) {
+  if (o.kind === "rock") {
+    ctx.fillStyle = "#4a5568";
+    ctx.beginPath(); ctx.moveTo(o.x, o.y + o.h); ctx.lineTo(o.x + o.w * 0.2, o.y + o.h * 0.2);
+    ctx.lineTo(o.x + o.w * 0.55, o.y); ctx.lineTo(o.x + o.w, o.y + o.h); ctx.fill();
+  } else if (o.kind === "weed") {
+    ctx.fillStyle = "#2f9e5b";
+    ctx.beginPath(); ctx.roundRect(o.x, o.y, o.w, o.h, [0, 0, 20, 20]); ctx.fill();
+  } else {
+    ctx.fillStyle = "#ff7ab8";
+    ctx.beginPath(); ctx.arc(o.x + o.w/2, o.y + o.h/2.2, o.w/2, Math.PI, 0); ctx.fill();
+    ctx.strokeStyle = "#ff7ab8"; ctx.lineWidth = 3;
+    for (let i = 0; i < 4; i++) {
+      const tx = o.x + 8 + i * 11;
+      ctx.beginPath(); ctx.moveTo(tx, o.y + o.h/2.2);
+      ctx.quadraticCurveTo(tx + Math.sin(performance.now()/200 + i) * 6, o.y + o.h * 0.8, tx, o.y + o.h); ctx.stroke();
+    }
+  }
+}
+
+function text(t, y, size, color = "#fff") {
+  ctx.fillStyle = color; ctx.font = `bold ${size}px sans-serif`; ctx.textAlign = "center";
+  ctx.fillText(t, W / 2, y);
+}
+
+function draw() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#1b8fc4"); g.addColorStop(1, "#021b2e");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  for (const b of bubbles) { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 7); ctx.fill(); }
+
+  if (state !== "ready") {
+    obstacles.forEach(drawObstacle);
+    drawPlayer();
+    ctx.textAlign = "left"; ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif";
+    ctx.fillText(`점수 ${Math.floor(score)}   최고 ${best}`, 16, 30);
+  }
+  if (state === "ready") {
+    text("🌊 바닷속 헤엄치기", H / 2 - 40, 40);
+    text("↑ ↓ 키 또는 화면을 누른 채 위/아래로 이동", H / 2 + 5, 18);
+    text("스페이스 / 화면 터치로 시작", H / 2 + 40, 22, "#ffe08a");
+  }
+  if (state === "over") {
+    text("게임 오버", H / 2 - 20, 44);
+    text(`점수 ${Math.floor(score)}  ·  최고 ${best}`, H / 2 + 20, 22);
+    text("스페이스 / 화면 터치로 다시 시작", H / 2 + 56, 20, "#ffe08a");
+  }
+}
+
+function loop(t) {
+  const dt = Math.min(0.05, (t - (last || t)) / 1000); last = t;
+  update(dt); draw(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
