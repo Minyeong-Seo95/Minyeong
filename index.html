@@ -17,7 +17,7 @@
 // 캐릭터 이미지: 같은 폴더에 character.png 를 넣으면 자동으로 사용됩니다.
 // 파일이 없으면 기본 물고기 그림이 나옵니다.
 const CHARACTER_SRC = "character.png";
-const PLAYER_SIZE = 70;      // 캐릭터 크기(px)
+const PLAYER_SIZE = 80;      // 캐릭터 크기(px)
 const GRAVITY = 0;           // 0이면 위/아래로 자유롭게 이동
 const SPEED_Y = 320;         // 위아래 이동 속도
 const START_SPEED = 260;     // 시작 장애물 속도 (px/초)
@@ -124,7 +124,9 @@ function drawPlayer() {
   const { x, y } = player;
   const bob = Math.sin(performance.now() / 150) * 3;
   if (imgOk) {
-    ctx.drawImage(img, x, y + bob, PLAYER_SIZE, PLAYER_SIZE);
+    // 원본 비율 유지: 높이를 PLAYER_SIZE에 맞춤
+    const w = PLAYER_SIZE * img.width / img.height;
+    ctx.drawImage(img, x + (PLAYER_SIZE - w) / 2, y + bob, w, PLAYER_SIZE);
   } else {
     // 기본 물고기
     ctx.save(); ctx.translate(x, y + bob + PLAYER_SIZE / 2);
